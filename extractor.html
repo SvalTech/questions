@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Automated Batch PDF Extractor</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- PDF.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    
+    <!-- JSZip & FileSaver -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+
+    <style>
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        
+        #pdf-wrapper { position: relative; background: #e2e8f0; margin: 0 auto; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.2); }
+        .page-canvas { display: block; border-bottom: 3px solid #64748b; background: white; }
+        .pdf-divider { display: flex; align-items: center; justify-content: center; background: #334155; color: white; font-size: 14px; font-weight: bold; height: 40px; border-bottom: 2px solid #0f172a; text-transform: uppercase; letter-spacing: 1px; }
+        
+        /* Interactive Overlays */
+        #hover-highlight { position: absolute; display: none; background: rgba(34, 197, 94, 0.1); border: 2px dashed #22c55e; pointer-events: none; z-index: 10; transition: all 0.1s; }
+        #hover-label { position: absolute; top: -12px; left: -2px; background: #22c55e; color: white; font-size: 11px; font-weight: bold; padding: 2px 6px; border-radius: 4px; }
+        
+        #selection-box { position: absolute; display: none; background: rgba(99, 102, 241, 0.15); border: 2px solid #4f46e5; pointer-events: none; z-index: 20; }
+        
+        #context-menu {
+            position: fixed; display: none; z-index: 50; background: white; border-radius: 0.5rem;
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.2), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+            border: 1px solid #e2e8f0; padding: 0.5rem; width: 280px;
+        }
+        
+        .menu-btn {
+            display: flex; align-items: center; width: 100%; text-align: left; padding: 0.5rem;
+            font-size: 0.875rem; font-weight: 500; border-radius: 0.25rem; color: #334155; transition: all 0.2s;
+        }
+        .menu-btn:hover:not(:disabled) { background-color: #f1f5f9; color: #0f172a; }
+        .menu-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        
+        .loader {
+            border: 3px solid #f3f3f3; border-top: 3px solid #6366f1; border-radius: 50%;
+            width: 24px; height: 24px; animation: spin 1s linear infinite; display: inline-block; vertical-align: middle;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        #toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 100; display: flex; flex-direction: column; gap: 10px; }
+        .toast { background: #1e293b; color: white; padding: 12px 20px; border-radius: 8px; font-size: 14px; font-weight: 500; box-shadow: 0 4px 6px rgba(0,0,0,0.1); opacity: 0; transition: opacity 0.3s, transform 0.3s; transform: translateY(20px); }
+        .toast.show { opacity: 1; transform: translateY(0); }
+    </style>
+</head>
+<body class="bg-slate-100 h-screen flex overflow-hidden font-sans">
+
+    <!-- Left Sidebar -->
+    <div class="w-1/3 bg-white border-r border-slate-200 flex flex-col h-full z-30 shadow-xl shrink-0 max-w-md">
+        <div class="p-5 border-b border-indigo-500 bg-indigo-600 text-white">
+            <h1 class="text-xl font-bold flex items-center gap-2">
+                <i data-lucide="copy-check"></i> Batch Extractor Pro
+            </h1>
+            <p class="text-xs text-indigo-100 mt-1">Select multiple PDFs. Extract everything in one click.</p>
+        </div>
+        
+        <div class="p-4 border-b border-slate-200 bg-slate-50 space-y-3">
+            <label class="block cursor-pointer bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 font-semibold py-2 px-4 rounded shadow-sm text-center transition-colors">
+                <span class="flex justify-center items-center gap-2"><i data-lucide="files" class="w-4 h-4"></i> 1. Upload PDF(s)</span>
+                <!-- Added "multiple" attribute here -->
+                <input type="file" id="pdf-upload" accept="application/pdf" multiple class="hidden">
+            </label>
+            
+            <button id="auto-extract-btn" disabled class="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold py-2 px-4 rounded shadow-sm flex justify-center items-center gap-2 transition-colors">
+                <i data-lucide="zap" class="w-4 h-4 text-yellow-300"></i> 2. Auto-Extract All Files
+            </button>
+
+            <button id="export-btn" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 px-4 rounded shadow-sm flex justify-center items-center gap-2 transition-colors">
+                <i data-lucide="folder-archive" class="w-4 h-4"></i> 3. Export to ZIP
+            </button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto p-4" id="data-list">
+            <div class="text-center text-slate-400 mt-10">
+                <i data-lucide="mouse-pointer-click" class="w-12 h-12 mx-auto mb-2 opacity-40"></i>
+                <p>Ready to extract.</p>
+                <p class="text-xs mt-2 px-4 leading-relaxed">Select one or more PDF files. Click <strong>Auto-Extract All</strong> to let the AI process all documents instantly.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Right Side: Continuous PDF Viewer -->
+    <div class="flex-1 flex flex-col h-full relative">
+        <div class="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6 shadow-sm z-20 shrink-0">
+            <div class="flex items-center gap-2 text-sm font-medium text-slate-600">
+                <i data-lucide="scroll" class="w-4 h-4"></i> Continuous Multi-Document Mode
+            </div>
+            <div class="flex items-center gap-3">
+                <button id="zoom-out" class="p-1.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700"><i data-lucide="zoom-out" class="w-5 h-5"></i></button>
+                <span id="zoom-level" class="text-sm font-medium text-slate-600 w-12 text-center">150%</span>
+                <button id="zoom-in" class="p-1.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700"><i data-lucide="zoom-in" class="w-5 h-5"></i></button>
+            </div>
+        </div>
+
+        <div class="flex-1 overflow-auto p-8 relative" id="scroll-container">
+            <div id="pdf-wrapper">
+                <!-- Page Canvases injected here -->
+                
+                <!-- Interactive Overlays -->
+                <div id="hover-highlight"><div id="hover-label">Auto-Extract</div></div>
+                <div id="selection-box"></div>
+            </div>
+        </div>
+        
+        <div id="loading-overlay" class="absolute inset-0 bg-white/90 backdrop-blur-sm z-40 hidden flex-col items-center justify-center">
+            <div class="loader mb-4"></div>
+            <p id="loading-text" class="text-lg font-semibold text-slate-700">Loading Documents...</p>
+            <p id="loading-progress" class="text-sm text-slate-500 mt-2 font-medium">Preparing...</p>
+        </div>
+    </div>
+
+    <!-- Context Menu for Manual Overrides -->
+    <div id="context-menu">
+        <div id="menu-manual-ids">
+            <div class="text-xs font-semibold text-slate-400 uppercase mb-1 px-2">Create New</div>
+            <button class="menu-btn" onclick="handleAction('manual_q_id')"><i data-lucide="folder-plus" class="w-4 h-4 mr-2 text-indigo-500"></i> New Question Here</button>
+            <button class="menu-btn" onclick="handleAction('manual_opt_id')"><i data-lucide="file-plus-2" class="w-4 h-4 mr-2 text-indigo-500"></i> New Option Here</button>
+            <div class="border-t my-1"></div>
+        </div>
+
+        <div class="text-xs font-semibold text-slate-400 uppercase mb-1 px-2">Manage Active Question</div>
+        <button class="menu-btn" id="btn-set-q-img" onclick="handleAction('set_q_img')"><i data-lucide="image" class="w-4 h-4 mr-2 text-blue-500"></i> Set as Question Image</button>
+        <button class="menu-btn" id="btn-app-q-img" onclick="handleAction('append_q_img')"><i data-lucide="copy-plus" class="w-4 h-4 mr-2 text-blue-500"></i> Append to Question Image</button>
+        
+        <div class="border-t my-1"></div>
+        
+        <div class="text-xs font-semibold text-slate-400 uppercase mb-1 px-2">Manage Active Option</div>
+        <button class="menu-btn" id="btn-set-opt-img" onclick="handleAction('set_opt_img')"><i data-lucide="image-plus" class="w-4 h-4 mr-2 text-emerald-500"></i> Set as Option Image</button>
+        <button class="menu-btn" id="btn-app-opt-img" onclick="handleAction('append_opt_img')"><i data-lucide="copy-plus" class="w-4 h-4 mr-2 text-emerald-500"></i> Append to Option Image</button>
+        
+        <div class="border-t my-1"></div>
+        <button class="menu-btn text-red-600 hover:bg-red-50" onclick="closeMenu()"><i data-lucide="x" class="w-4 h-4 mr-2"></i> Cancel Selection</button>
+    </div>
+
+    <div id="toast-container"></div>
+
+    <script>
+        lucide.createIcons();
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        let scale = 1.5;
+        let uploadedFiles = [];
+        let pagesData = []; // { canvas, offsetY, height, width }
+        let questionBlocks = [];
+        
+        const wrapper = document.getElementById('pdf-wrapper');
+        const hoverHighlight = document.getElementById('hover-highlight');
+        const hoverLabel = document.getElementById('hover-label');
+        const selectionBox = document.getElementById('selection-box');
+        const autoExtractBtn = document.getElementById('auto-extract-btn');
+        
+        let isDragging = false, startX, startY, rectW, rectH;
+        let currentCropDataUrl = null;
+        let hoveredBlock = null;
+
+        let extractedData = [];
+        let activeQuestionIndex = -1;
+        let activeOptionIndex = -1;
+
+        // --- Core: Multi-PDF Loading & Rendering ---
+        document.getElementById('pdf-upload').addEventListener('change', function(e) {
+            let files = Array.from(e.target.files).filter(f => f.type === 'application/pdf');
+            if(files.length === 0) return alert('Please upload valid PDF files.');
+            
+            uploadedFiles = files; // Store globally for zooming re-renders
+            renderAllFiles();
+        });
+
+        async function renderAllFiles() {
+            showLoader("Merging PDFs...");
+            
+            // Clean up old renders
+            document.querySelectorAll('.page-canvas, .pdf-divider').forEach(el => el.remove());
+            pagesData = [];
+            wrapper.style.width = '0px';
+            wrapper.style.height = '0px';
+            autoExtractBtn.disabled = true;
+
+            let totalHeight = 0;
+            let maxWidth = 0;
+            let globalTextItems = [];
+
+            for (let fIdx = 0; fIdx < uploadedFiles.length; fIdx++) {
+                let file = uploadedFiles[fIdx];
+                
+                // Add Visual Divider between PDFs
+                if (fIdx > 0) {
+                    let divider = document.createElement('div');
+                    divider.className = 'pdf-divider';
+                    divider.style.top = totalHeight + 'px';
+                    divider.innerHTML = `<i data-lucide="file-text" class="w-4 h-4 mr-2"></i> End of Document &mdash; Start of ${file.name}`;
+                    wrapper.appendChild(divider);
+                    totalHeight += 40; // divider height
+                }
+
+                let fileData = await new Promise((resolve) => {
+                    let reader = new FileReader();
+                    reader.onload = e => resolve(new Uint8Array(e.target.result));
+                    reader.readAsArrayBuffer(file);
+                });
+
+                let pdf = await pdfjsLib.getDocument(fileData).promise;
+
+                for (let num = 1; num <= pdf.numPages; num++) {
+                    document.getElementById('loading-progress').textContent = `File ${fIdx + 1} of ${uploadedFiles.length} : Rendering Page ${num}/${pdf.numPages}`;
+                    
+                    let page = await pdf.getPage(num);
+                    let viewport = page.getViewport({ scale: scale });
+                    
+                    let canvas = document.createElement('canvas');
+                    canvas.className = 'page-canvas';
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+                    wrapper.appendChild(canvas);
+
+                    await page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise;
+                    let textContent = await page.getTextContent();
+                    
+                    // Map local text items to Global Y coordinates
+                    textContent.items.forEach(item => {
+                        let pt = viewport.convertToViewportPoint(item.transform[4], item.transform[5]);
+                        let h = (item.height * viewport.scale) || (12 * scale);
+                        globalTextItems.push({
+                            str: item.str,
+                            x: pt[0],
+                            y: pt[1] - h + totalHeight, // Cumulative offset across all files
+                            w: item.width * viewport.scale,
+                            h: h
+                        });
+                    });
+
+                    pagesData.push({
+                        canvas: canvas,
+                        offsetY: totalHeight,
+                        width: viewport.width,
+                        height: viewport.height
+                    });
+
+                    totalHeight += viewport.height;
+                    if (viewport.width > maxWidth) maxWidth = viewport.width;
+                }
+            }
+
+            // Adjust width of visual dividers
+            document.querySelectorAll('.pdf-divider').forEach(el => el.style.width = maxWidth + 'px');
+            lucide.createIcons();
+
+            wrapper.style.width = maxWidth + 'px';
+            wrapper.style.height = totalHeight + 'px';
+
+            document.getElementById('loading-progress').textContent = `Detecting Question Boundaries Across All Files...`;
+            await new Promise(r => setTimeout(r, 50)); // UI breathe
+            
+            calculateGlobalBlocks(globalTextItems, maxWidth, totalHeight);
+            
+            autoExtractBtn.disabled = questionBlocks.length === 0;
+            hideLoader();
+            showToast(`Analysis Complete: Found ${questionBlocks.length} Questions across ${uploadedFiles.length} files.`, 'success');
+        }
+
+        document.getElementById('zoom-in').addEventListener('click', () => { if(uploadedFiles.length){ scale += 0.25; document.getElementById('zoom-level').textContent = (scale*100)+'%'; renderAllFiles(); }});
+        document.getElementById('zoom-out').addEventListener('click', () => { if(uploadedFiles.length && scale > 0.5){ scale -= 0.25; document.getElementById('zoom-level').textContent = (scale*100)+'%'; renderAllFiles(); }});
+
+        // --- Core Intelligence: Seamless Parsing ---
+        function calculateGlobalBlocks(items, maxWidth, totalHeight) {
+            questionBlocks = [];
+            items.sort((a,b) => a.y - b.y || a.x - b.x);
+
+            let lines = [];
+            let currentLine = null;
+            items.forEach(item => {
+                if (!currentLine) {
+                    currentLine = { minY: item.y, maxY: item.y + item.h, minX: item.x, maxX: item.x + item.w, str: item.str };
+                    lines.push(currentLine);
+                } else {
+                    if (Math.abs(item.y - currentLine.minY) < (8 * scale)) { 
+                        currentLine.str += " " + item.str;
+                        currentLine.maxX = Math.max(currentLine.maxX, item.x + item.w);
+                        currentLine.maxY = Math.max(currentLine.maxY, item.y + item.h);
+                    } else {
+                        currentLine = { minY: item.y, maxY: item.y + item.h, minX: item.x, maxX: item.x + item.w, str: item.str };
+                        lines.push(currentLine);
+                    }
+                }
+            });
+
+            // Detect Question & Option Blocks
+            let currentBlock = null;
+            lines.forEach(line => {
+                let text = line.str.replace(/\s+/g, ' ');
+                let qMatch = text.match(/Question\s*Id\s*:\s*(\d+)/i);
+                
+                if (qMatch) {
+                    if (currentBlock) {
+                        currentBlock.endY = line.minY - 10;
+                        questionBlocks.push(currentBlock);
+                    }
+                    currentBlock = {
+                        id: qMatch[1],
+                        startY: line.minY - 5,
+                        qBodyTop: line.maxY + 5,
+                        qBodyBottom: null,
+                        options: []
+                    };
+                } else if (currentBlock) {
+                    if (text.match(/Options\s*:/i)) {
+                        currentBlock.qBodyBottom = line.minY - 5;
+                    } else {
+                        let optMatch = text.match(/^\s*(\d{5,12})\s*\./);
+                        if (optMatch) {
+                            if (!currentBlock.qBodyBottom) currentBlock.qBodyBottom = line.minY - 10;
+                            currentBlock.options.push({ id: optMatch[1], y: line.minY, maxY: line.maxY });
+                        }
+                    }
+                }
+            });
+            if (currentBlock) {
+                currentBlock.endY = totalHeight - 10;
+                questionBlocks.push(currentBlock);
+            }
+
+            // Calculate precise global bounding rectangles
+            questionBlocks.forEach(b => {
+                if (!b.qBodyBottom) b.qBodyBottom = b.endY; 
+                b.qRect = { x: 20, y: b.qBodyTop, w: maxWidth - 40, h: Math.max(0, b.qBodyBottom - b.qBodyTop) };
+                b.optRects = [];
+                for (let i = 0; i < b.options.length; i++) {
+                    let opt = b.options[i];
+                    let nextOpt = b.options[i + 1];
+                    let optEndY = nextOpt ? nextOpt.y - 5 : b.endY;
+                    b.optRects.push({
+                        id: opt.id,
+                        rect: { x: 20, y: opt.y - 4, w: maxWidth - 40, h: Math.max(0, optEndY - (opt.y - 4)) }
+                    });
+                }
+            });
+        }
+
+        // --- Cross-Page & Cross-File Stitching Engine ---
+        async function cropGlobalArea(x, y, w, h) {
+            if (w <= 0 || h <= 0) return null;
+            
+            const tC = document.createElement('canvas');
+            tC.width = w; tC.height = h;
+            const ctx = tC.getContext('2d');
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, w, h);
+
+            for (let page of pagesData) {
+                let pageTop = page.offsetY;
+                let pageBottom = page.offsetY + page.height;
+
+                // Check intersection
+                if (y < pageBottom && (y + h) > pageTop) {
+                    let sourceY = Math.max(0, y - pageTop);
+                    let sourceBottom = Math.min(page.height, (y + h) - pageTop);
+                    let sourceHeight = sourceBottom - sourceY;
+                    let destY = Math.max(0, pageTop - y);
+
+                    ctx.drawImage(page.canvas, x, sourceY, w, sourceHeight, 0, destY, w, sourceHeight);
+                }
+            }
+            return tC.toDataURL('image/png');
+        }
+
+        // --- Automated Bulk Extraction ---
+        autoExtractBtn.addEventListener('click', async () => {
+            if (extractedData.length > 0) {
+                const proceed = confirm("This will clear your current extracted list and re-extract everything automatically. Proceed?");
+                if (!proceed) return;
+            }
+            
+            extractedData = []; 
+            showLoader("Batch Extraction Started...");
+
+            for (let i = 0; i < questionBlocks.length; i++) {
+                document.getElementById('loading-progress').textContent = `Extracting & Slicing Question ${i + 1} of ${questionBlocks.length} ...`;
+                await new Promise(r => setTimeout(r, 10)); // Force DOM repaint
+                await autoExtractFullQuestion(questionBlocks[i], true); // true = silent mode
+            }
+
+            hideLoader();
+            showToast(`Batch Auto-Extracted ${questionBlocks.length} Questions successfully!`, 'success');
+            
+            activeQuestionIndex = extractedData.length > 0 ? 0 : -1;
+            activeOptionIndex = -1;
+            renderSidebar();
+        });
+
+
+        // --- Interaction Logic (Mouse) ---
+        wrapper.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return; 
+            closeMenu();
+            const rect = wrapper.getBoundingClientRect();
+            startX = e.clientX - rect.left; startY = e.clientY - rect.top;
+            isDragging = false; rectW = 0; rectH = 0;
+            selectionBox.style.display = 'block';
+            selectionBox.style.left = startX + 'px';
+            selectionBox.style.top = startY + 'px';
+            selectionBox.style.width = '0px';
+            selectionBox.style.height = '0px';
+        });
+
+        wrapper.addEventListener('mousemove', (e) => {
+            const rect = wrapper.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left; const mouseY = e.clientY - rect.top;
+
+            if (e.buttons === 1) {
+                isDragging = true;
+                rectW = mouseX - startX; rectH = mouseY - startY;
+                selectionBox.style.left = (rectW < 0 ? mouseX : startX) + 'px';
+                selectionBox.style.top = (rectH < 0 ? mouseY : startY) + 'px';
+                selectionBox.style.width = Math.abs(rectW) + 'px';
+                selectionBox.style.height = Math.abs(rectH) + 'px';
+                hoverHighlight.style.display = 'none';
+                return;
+            }
+
+            hoveredBlock = null;
+            for(let b of questionBlocks) {
+                if(mouseY >= b.startY && mouseY <= b.endY) { hoveredBlock = b; break; }
+            }
+
+            if (hoveredBlock) {
+                wrapper.style.cursor = 'pointer';
+                hoverHighlight.style.display = 'block';
+                hoverHighlight.style.left = '10px';
+                hoverHighlight.style.top = hoveredBlock.startY + 'px';
+                hoverHighlight.style.width = (wrapper.offsetWidth - 20) + 'px';
+                hoverHighlight.style.height = (hoveredBlock.endY - hoveredBlock.startY) + 'px';
+                hoverLabel.textContent = `Auto-Extract Q:${hoveredBlock.id}`;
+            } else {
+                wrapper.style.cursor = 'crosshair';
+                hoverHighlight.style.display = 'none';
+            }
+        });
+
+        wrapper.addEventListener('mouseup', async (e) => {
+            selectionBox.style.display = 'none';
+            
+            if (!isDragging || (Math.abs(rectW) < 5 && Math.abs(rectH) < 5)) {
+                if (hoveredBlock) {
+                    showLoader("Slicing Images...");
+                    await autoExtractFullQuestion(hoveredBlock, false);
+                }
+            } else {
+                let actX = rectW < 0 ? startX + rectW : startX;
+                let actY = rectH < 0 ? startY + rectH : startY;
+                currentCropDataUrl = await cropGlobalArea(actX, actY, Math.abs(rectW), Math.abs(rectH));
+                showContextMenu(e.clientX, e.clientY);
+            }
+        });
+
+        async function autoExtractFullQuestion(block, silent = false) {
+            let qData = { id: block.id, image: null, options: [] };
+            
+            if (block.qRect.h > 5) qData.image = await cropGlobalArea(block.qRect.x, block.qRect.y, block.qRect.w, block.qRect.h);
+
+            for(let o of block.optRects) {
+                if (o.rect.h > 5) {
+                    qData.options.push({
+                        id: o.id,
+                        image: await cropGlobalArea(o.rect.x, o.rect.y, o.rect.w, o.rect.h)
+                    });
+                }
+            }
+
+            extractedData.push(qData);
+            
+            if (!silent) {
+                activeQuestionIndex = extractedData.length - 1;
+                activeOptionIndex = -1;
+                hideLoader();
+                showToast(`Extracted Q:${block.id}`, 'success');
+                renderSidebar();
+            }
+        }
+
+        // --- Context Menus for Adjustments & Appending ---
+        const contextMenu = document.getElementById('context-menu');
+        
+        function showContextMenu(x, y) {
+            const hasQ = activeQuestionIndex !== -1;
+            const hasOpt = activeOptionIndex !== -1;
+
+            document.getElementById('btn-set-q-img').disabled = !hasQ;
+            document.getElementById('btn-app-q-img').disabled = !hasQ || !extractedData[activeQuestionIndex]?.image;
+            document.getElementById('btn-set-opt-img').disabled = !hasOpt;
+            document.getElementById('btn-app-opt-img').disabled = !hasOpt || !extractedData[activeQuestionIndex].options[activeOptionIndex]?.image;
+
+            contextMenu.style.display = 'block';
+            let r = contextMenu.getBoundingClientRect();
+            if (x + r.width > window.innerWidth) x = window.innerWidth - r.width - 10;
+            if (y + r.height > window.innerHeight) y = window.innerHeight - r.height - 10;
+            contextMenu.style.left = x + 'px'; contextMenu.style.top = y + 'px';
+        }
+
+        function closeMenu() { contextMenu.style.display = 'none'; }
+
+        async function handleAction(actionType) {
+            closeMenu();
+            if (!currentCropDataUrl && !actionType.includes('manual')) return;
+
+            if (actionType === 'manual_q_id') {
+                let id = prompt("Enter Question ID:", `Q_${Date.now().toString().slice(-4)}`);
+                if(id) {
+                    extractedData.push({ id: id, image: currentCropDataUrl, options: [] });
+                    activeQuestionIndex = extractedData.length - 1; activeOptionIndex = -1;
+                    showToast(`Created Custom Question`, 'success');
+                }
+            } else if (actionType === 'manual_opt_id') {
+                if (activeQuestionIndex === -1) return showToast('Create a question first!', 'error');
+                let id = prompt("Enter Option ID:", `Opt_${Date.now().toString().slice(-3)}`);
+                if(id) {
+                    extractedData[activeQuestionIndex].options.push({ id: id, image: currentCropDataUrl });
+                    activeOptionIndex = extractedData[activeQuestionIndex].options.length - 1;
+                    showToast(`Added Custom Option`, 'success');
+                }
+            } else if (actionType === 'set_q_img') {
+                extractedData[activeQuestionIndex].image = currentCropDataUrl;
+                showToast('Question image updated.', 'success');
+            } else if (actionType === 'append_q_img') {
+                showLoader("Stitching images...");
+                extractedData[activeQuestionIndex].image = await stitchImages(extractedData[activeQuestionIndex].image, currentCropDataUrl);
+                showToast('Appended to Question.', 'success');
+            } else if (actionType === 'set_opt_img') {
+                extractedData[activeQuestionIndex].options[activeOptionIndex].image = currentCropDataUrl;
+                showToast('Option image updated.', 'success');
+            } else if (actionType === 'append_opt_img') {
+                showLoader("Stitching images...");
+                let old = extractedData[activeQuestionIndex].options[activeOptionIndex].image;
+                extractedData[activeQuestionIndex].options[activeOptionIndex].image = await stitchImages(old, currentCropDataUrl);
+                showToast('Appended to Option.', 'success');
+            }
+            hideLoader(); renderSidebar();
+        }
+
+        function loadImage(src) { return new Promise((resolve) => { const img = new Image(); img.onload = () => resolve(img); img.src = src; }); }
+        
+        async function stitchImages(src1, src2) {
+            const img1 = await loadImage(src1), img2 = await loadImage(src2);
+            const tc = document.createElement('canvas');
+            tc.width = Math.max(img1.width, img2.width); tc.height = img1.height + img2.height;
+            const ctx = tc.getContext('2d');
+            ctx.fillStyle = 'white'; ctx.fillRect(0, 0, tc.width, tc.height);
+            ctx.drawImage(img1, 0, 0); ctx.drawImage(img2, 0, img1.height);
+            return tc.toDataURL('image/png');
+        }
+
+        // --- Sidebar UI & Feedback ---
+        function showToast(msg, type='success') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast flex items-center gap-2 ${type === 'error' ? 'bg-red-600' : 'bg-emerald-600'}`;
+            toast.innerHTML = `<i data-lucide="${type === 'error' ? 'alert-circle' : 'check-circle'}" class="w-4 h-4"></i> ${msg}`;
+            container.appendChild(toast);
+            lucide.createIcons();
+            setTimeout(() => toast.classList.add('show'), 10);
+            setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 300); }, 3000);
+        }
+
+        function renderSidebar() {
+            const list = document.getElementById('data-list');
+            if (!extractedData.length) {
+                list.innerHTML = `<div class="text-center text-slate-400 mt-10"><i data-lucide="mouse-pointer-click" class="w-12 h-12 mx-auto mb-2 opacity-40"></i><p>Ready to extract.</p></div>`;
+                lucide.createIcons(); return;
+            }
+
+            let html = '';
+            extractedData.forEach((q, qI) => {
+                const actQ = qI === activeQuestionIndex;
+                html += `<div class="mb-4 bg-white border ${actQ ? 'border-indigo-500 ring-2 ring-indigo-200' : 'border-slate-200'} rounded-lg shadow-sm overflow-hidden" id="q-card-${qI}">
+                    <div class="bg-indigo-50 p-3 flex justify-between items-center cursor-pointer border-b ${actQ ? 'border-indigo-200' : 'border-slate-200'}" onclick="setActiveQ(${qI})">
+                        <div class="font-bold text-slate-800 text-sm flex items-center gap-2"><i data-lucide="help-circle" class="w-4 h-4 text-indigo-600"></i> ${q.id}</div>
+                        <button onclick="delQ(event, ${qI})" class="text-slate-400 hover:text-red-600 p-1 transition-colors"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                    </div>
+                    <div class="p-3">
+                        <div class="mb-3">
+                            <div class="text-xs text-slate-500 font-semibold uppercase mb-1">Question Body</div>
+                            ${q.image ? `<img src="${q.image}" class="w-full border border-slate-200 rounded max-h-24 object-contain bg-white">` : `<div class="bg-slate-50 border border-dashed border-slate-300 rounded h-10 flex items-center justify-center text-xs text-slate-400 italic">No image</div>`}
+                        </div>
+                        <div>
+                            <div class="text-xs text-slate-500 font-semibold uppercase mb-1">Options (${q.options.length})</div>
+                            <div class="space-y-2">
+                                ${q.options.map((o, oI) => {
+                                    const actO = actQ && oI === activeOptionIndex;
+                                    return `<div class="flex items-center gap-2 border ${actO ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200'} p-1.5 rounded cursor-pointer transition-colors" onclick="setActiveO(event, ${qI}, ${oI})">
+                                        <div class="font-semibold text-[11px] text-slate-600 bg-slate-200 px-1.5 py-1 rounded w-20 text-center truncate" title="${o.id}">${o.id}</div>
+                                        <div class="flex-1">${o.image ? `<img src="${o.image}" class="h-8 w-full object-contain object-left border border-slate-100 bg-white">` : `<span class="text-xs text-slate-400 italic">Empty</span>`}</div>
+                                        <button onclick="delO(event, ${qI}, ${oI})" class="text-slate-400 hover:text-red-500 pr-1"><i data-lucide="x" class="w-4 h-4"></i></button>
+                                    </div>`;
+                                }).join('')}
+                            </div>
+                        </div>
+                    </div></div>`;
+            });
+            list.innerHTML = html; lucide.createIcons();
+            
+            if(activeQuestionIndex !== -1) {
+                const activeCard = document.getElementById(`q-card-${activeQuestionIndex}`);
+                if(activeCard) activeCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+
+        function setActiveQ(i) { activeQuestionIndex = i; activeOptionIndex = -1; renderSidebar(); }
+        function setActiveO(e, q, o) { e.stopPropagation(); activeQuestionIndex = q; activeOptionIndex = o; renderSidebar(); }
+        function delQ(e, i) { e.stopPropagation(); if(confirm('Delete entire question?')) { extractedData.splice(i, 1); activeQuestionIndex = extractedData.length-1; activeOptionIndex = -1; renderSidebar(); } }
+        function delO(e, q, o) { e.stopPropagation(); extractedData[q].options.splice(o, 1); if(activeQuestionIndex===q && activeOptionIndex===o) activeOptionIndex = -1; renderSidebar(); }
+
+        // --- Export ---
+        document.getElementById('export-btn').addEventListener('click', () => {
+            if (!extractedData.length) return alert("No data to export!");
+            showLoader("Generating ZIP file...");
+            const zip = new JSZip();
+            extractedData.forEach((q, i) => {
+                const folderName = q.id ? q.id : `Question_${i+1}`;
+                const folder = zip.folder(folderName);
+                if (q.image) folder.file(`question.png`, q.image.replace(/^data:image\/(png|jpeg|jpg);base64,/, ""), {base64: true});
+                q.options.forEach((o, j) => {
+                    if (o.image) {
+                        const optName = o.id ? o.id : `Option_${j+1}`;
+                        folder.file(`${optName}.png`, o.image.replace(/^data:image\/(png|jpeg|jpg);base64,/, ""), {base64: true});
+                    }
+                });
+            });
+            zip.generateAsync({ type: "blob" }).then(c => { saveAs(c, "extracted_questions.zip"); hideLoader(); });
+        });
+
+        function showLoader(t) { document.getElementById('loading-text').textContent = t; document.getElementById('loading-overlay').style.display = 'flex'; }
+        function hideLoader() { document.getElementById('loading-overlay').style.display = 'none'; }
+        document.addEventListener('click', (e) => { if (e.target !== wrapper && !wrapper.contains(e.target) && !contextMenu.contains(e.target)) closeMenu(); });
+    </script>
+</body>
+</html>
